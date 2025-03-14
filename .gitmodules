@@ -1,0 +1,3 @@
+[submodule "gdc-client"]
+	path = gdc-client
+	url = https://github.com/NCI-GDC/gdc-client.git
