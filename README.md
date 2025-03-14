@@ -72,10 +72,10 @@ The main script, tcga_tools.py, downloads TCGA datasets using the gdc-client exe
 
 ## Basic Usage
 ```bash
-python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \
+venv/bin/python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \ # Can be any of the datasets present in ./manifests
     --parent-dir /path/to/data \
-    --manifest-dir /path/to/manifests \
-    --raw-annotations-dir /path/to/raw_annotations
+    --manifest-dir /path/to/manifests \ # Defaults to./manifests
+    --raw-annotations-dir /path/to/raw_annotations # Defaults to ./raw_annotations
 ```
 ### Input Parameters and Defaults
 --datasets:
@@ -119,7 +119,7 @@ python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \
     --verbose
 ```
 ### Running on HPC (SLURM)
-Below is an example SLURM job script (tcga_download.sbatch) for running the download with 4 processes:
+Below is an example SLURM job script (shark_run.sbatch) for running the download with 4 processes:
 
 ```sh
 #!/bin/sh
@@ -153,6 +153,49 @@ Submit the job with:
 ```bash
 sbatch shark_run.sbatch
 ```
+
+## Output
+TCGA-Tools provides a clean directory output structure where slides and annotations are stored. For example, let us assume we have set 'parent_dir' to 'TCGA', and we downloaded the TCGA-LUSC and TCGA-BRCA datasets. Then our directory should look like this:
+```graphql
+📂 TCGA/
+ ├── 📂 TCGA-LUSC/                      # Dataset directory (one per dataset)
+ │   ├── 📝 sample_to_case_map_tcga_lusc.tsv # Sample ID → Case ID mapping
+ │   ├── 📝 tcga-TCGA-LUSC-download.log  # Download log file
+ │   ├── 📜 TCGA-60-2712-01Z.svs         # Slide file (renamed based on Sample ID)
+ │   ├── 📜 TCGA-56-7221-01Z.svs
+ │   ├── 📜 TCGA-21-A5DI-01Z.svs
+ │   ├── 📜 TCGA-60-2695-01Z.svs
+ │   ├── 📜 TCGA-60-2710-01Z.svs
+ │   ├── 📜 TCGA-22-5472-01Z.svs
+ │   ├── 📜 ... (more .svs slides)
+ │   ├── 📝 clinical_tcga_lusc.tsv       # Extracted clinical data (dataset-specific)
+ │   ├── 📝 survival_annotation_tcga_lusc.tsv   # Processed survival data
+ │   ├── 📝 classification_annotation_tcga_lusc.tsv # Processed classification data
+ │   ├── 📝 primary_diagnosis_annotation_tcga_lusc.tsv # Diagnosis-based classification
+ │
+ ├── 📂 TCGA-BRCA/                      # Another dataset, same structure
+ │   ├── 📝 sample_to_case_map_tcga_brca.tsv
+ │   ├── 📝 tcga-TCGA-BRCA-download.log
+ │   ├── 📜 TCGA-XX-XXXX-01Z.svs
+ │   ├── 📝 clinical_tcga_brca.tsv
+ │   ├── 📝 survival_annotation_tcga_brca.tsv
+ │   ├── 📝 classification_annotation_tcga_brca.tsv
+ │   ├── 📝 primary_diagnosis_annotation_tcga_brca.tsv
+ │
+📂 manifests/                       # Directory for manifest files
+ ├── 📝 gdc_manifest.tcga_lusc.txt
+ ├── 📝 gdc_manifest.tcga_brca.txt
+ │
+📂 raw_annotations/                 # Directory for raw annotation files
+ ├── 📜 clinical.project-tcga_lusc.tar.gz
+ ├── 📜 biospecimen.project-tcga_lusc.tar.gz
+ ├── 📜 clinical.project-tcga_brca.tar.gz
+ ├── 📜 biospecimen.project-tcga_brca.tar.gz
+ ├── 📝 gdc_sample_sheet_tcga_lusc.txt
+ ├── 📝 gdc_sample_sheet_tcga_brca.txt
+ |
+ ├── 📝 README.md
+ ```
 
 ### Contributing
 Contributions, bug reports, and feature requests are welcome. Please open issues or submit pull requests on GitHub.
