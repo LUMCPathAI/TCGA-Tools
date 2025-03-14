@@ -12,6 +12,7 @@ This script handles three main tasks:
    - The function `download_with_manifest()` calls the gdc-client with the given manifest,
      download directory, and log file.
    - The function `download_dataset()` uses this to download all files for a given dataset.
+   - An optional number of processes can be specified (using --n-processes) and is passed to gdc-client.
 3. Processing Annotation Files:
    - The script looks in a specified raw annotations directory (via --raw-annotations-dir) for tar.gz files with names:
          clinical.project-tcga_{normalized}.tar.gz
@@ -19,10 +20,10 @@ This script handles three main tasks:
      and processes these to generate survival prediction and classification annotation files.
      
 Usage:
-    python tcga_downloader.py --datasets TCGA-LUSC TCGA-BRCA \
+    python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \
         --parent-dir /path/to/data --manifest-dir /path/to/manifests \
         --raw-annotations-dir /path/to/raw_annotations [--build-gdc] \
-        [--gdc-client-dir ./gdc-client] [--gdc-client-path ./gdc-client-bin]
+        [--gdc-client-dir ./gdc-client] [--gdc-client-path ./gdc-client_exec] [--n-processes 4]
 
 Requirements:
     - Python 3.x
@@ -43,8 +44,8 @@ from tqdm import tqdm
 
 def setup_logging():
     """Configure logging for the script."""
-    logging.basicConfig(level=logging.INFO, 
-                        format="%(asctime)s [%(levelname)s] %(message)s", 
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s",
                         datefmt='%Y-%m-%d %H:%M:%S')
 
 def normalize_dataset_name(dataset: str) -> str:
@@ -116,7 +117,7 @@ def build_gdc_client(bin_dir: str, output_executable: str) -> str:
     logging.info(f"gdc-client installed at: {output_executable}")
     return os.path.abspath(output_executable)
 
-def download_with_manifest(manifest_file: str, download_dir: str, log_file: str, gdc_client_executable: str):
+def download_with_manifest(manifest_file: str, download_dir: str, log_file: str, gdc_client_executable: str, n_processes: int = None, verbose: bool = False):
     """
     Download all files listed in the manifest using the gdc-client download command.
     
@@ -125,6 +126,8 @@ def download_with_manifest(manifest_file: str, download_dir: str, log_file: str,
         download_dir (str): Directory where files will be downloaded.
         log_file (str): Path to the log file for the gdc-client download process.
         gdc_client_executable (str): Path to the gdc-client executable.
+        n_processes (int): Optional. Number of processes to use for downloading.
+        verbose (bool): If True, enable verbose output from gdc-client.
     
     Raises:
         Exception: If the download process fails.
@@ -137,6 +140,13 @@ def download_with_manifest(manifest_file: str, download_dir: str, log_file: str,
         "--manifest", manifest_file,
         "--log-file", log_file
     ]
+    
+    if n_processes is not None:
+        cmd.extend(["-n", str(n_processes)])
+    
+    if verbose:
+        cmd.append("--debug")
+    
     logging.debug("Executing command: " + " ".join(cmd))
     
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -147,7 +157,7 @@ def download_with_manifest(manifest_file: str, download_dir: str, log_file: str,
     else:
         logging.info(f"Download completed successfully. See log file: {log_file}")
 
-def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str, raw_annotations_dir: str, gdc_client_executable: str):
+def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str, raw_annotations_dir: str, gdc_client_executable: str, n_processes: int = None, verbose: bool = False):
     """
     Download a TCGA dataset using its manifest file and process annotation data.
     
@@ -157,6 +167,8 @@ def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str, raw_
         manifest_dir (str): Directory containing the manifest files.
         raw_annotations_dir (str): Directory containing raw annotation tar.gz files.
         gdc_client_executable (str): Path to the gdc-client executable.
+        n_processes (int): Optional. Number of processes to use.
+        verbose (bool): If True, enable verbose output.
     """
     logging.info(f"--- Processing dataset: {dataset_name} ---")
     
@@ -177,7 +189,7 @@ def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str, raw_
     log_file = os.path.join(dataset_dir, f"tcga-{dataset_name}-download.log")
     
     # Download files using gdc-client and the manifest.
-    download_with_manifest(manifest_file, dataset_dir, log_file, gdc_client_executable)
+    download_with_manifest(manifest_file, dataset_dir, log_file, gdc_client_executable, n_processes=n_processes, verbose=verbose)
     
     # Process annotation files from the raw annotations directory.
     # Expected file names:
@@ -305,16 +317,20 @@ def main():
                         help="List of TCGA dataset names to download (e.g. TCGA-LUSC TCGA-BRCA)")
     parser.add_argument("--parent-dir", required=True,
                         help="Parent directory to store downloaded datasets")
-    parser.add_argument("--manifest-dir", required=True,
+    parser.add_argument("--manifest-dir", required=True, default="./manifests",
                         help="Directory containing the manifest files")
-    parser.add_argument("--raw-annotations-dir", required=True,
+    parser.add_argument("--raw-annotations-dir", required=True, default="./raw_annotations",
                         help="Directory containing the raw annotation tar.gz files")
     parser.add_argument("--gdc-client-dir", default="./gdc-client",
                         help="Path to the gdc-client submodule directory (default: ./gdc-client)")
-    parser.add_argument("--gdc-client-path", default="./gdc-client-bin",
-                        help="Path to the gdc-client executable (default: ./gdc-client-bin)")
+    parser.add_argument("--gdc-client-path", default="./gdc-client_exec",
+                        help="Path to the gdc-client executable (default: ./gdc-client_exec)")
     parser.add_argument("--build-gdc", action="store_true",
                         help="If set, build the gdc-client from source using the package script")
+    parser.add_argument("--n-processes", type=int, default=1,
+                        help="Number of processes to use for downloading (passed to gdc-client with -n)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable verbose output from gdc-client")
     
     args = parser.parse_args()
     
@@ -331,7 +347,8 @@ def main():
     # Process each dataset.
     for dataset in args.datasets:
         try:
-            download_dataset(dataset, args.parent_dir, args.manifest_dir, args.raw_annotations_dir, gdc_client_executable)
+            download_dataset(dataset, args.parent_dir, args.manifest_dir, args.raw_annotations_dir,
+                             gdc_client_executable, n_processes=args.n_processes, verbose=args.verbose)
         except Exception as e:
             logging.error(f"Error processing dataset {dataset}: {e}")
     
