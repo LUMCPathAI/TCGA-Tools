@@ -7,7 +7,7 @@
 - **GDC-Client Build & Installation:**  
   Automatically builds the [gdc-client](https://github.com/NCI-GDC/gdc-client) executable from source using a Git submodule.
 
-- **Clean data storage**
+- **Clean data storage:**
   Ensures the datasets are stored in a clean and manageable way (e.g. no subdirectories) alogn with their annotations
 
 - **Annotation Processing:**  
