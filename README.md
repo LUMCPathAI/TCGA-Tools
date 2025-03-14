@@ -7,11 +7,11 @@
 - **GDC-Client Build & Installation:**  
   Automatically builds the [gdc-client](https://github.com/NCI-GDC/gdc-client) executable from source using a Git submodule.
 
-- **Parallel Downloading:**  
-  Supports parallel downloads by specifying the number of processes.
+- **Clean data storage**
+  Ensures the datasets are stored in a clean and manageable way (e.g. no subdirectories) alogn with their annotations
 
 - **Annotation Processing:**  
-  Processes clinical and biospecimen annotation files (tar.gz) from raw TCGA data to generate survival prediction and classification annotation files.
+  Processes clinical and biospecimen annotation files (tar.gz) from raw TCGA data to generate survival prediction and classification annotation files, which can be used for downstream tasks like [PathBench-MIL](https://github.com/Sbrussee/PathBench-MIL)
 
 - **Configurable Workflow:**  
   Provides a command-line interface with multiple parameters for customization.
