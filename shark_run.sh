@@ -1,7 +1,7 @@
 #!/bin/sh
 
 #SBATCH -J TCGA_DOWNLOAD
-#SBATCH --mem=10G
+#SBATCH --mem=20G
 #SBATCH --partition=all
 #SBATCH --time=300:00:00
 #SBATCH --ntasks=1
