@@ -78,35 +78,35 @@ venv/bin/python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \ # Can be any of t
     --raw-annotations-dir /path/to/raw_annotations # Defaults to ./raw_annotations
 ```
 ### Input Parameters and Defaults
---datasets:
+`--datasets`:
 Required. List of TCGA dataset names to download (e.g., TCGA-LUSC TCGA-BRCA).
 
---parent-dir:
+`--parent-dir`:
 Required. Parent directory where the downloaded datasets will be stored.
 
---manifest-dir:
+`--manifest-dir`:
 Directory containing the manifest files.
 Default: ./manifests
 
---raw-annotations-dir:
+`--raw-annotations-dir`:
 Directory containing the raw annotation tar.gz files.
 Default: ./raw_annotations
 
---gdc-client-dir:
+`--gdc-client-dir`:
 Path to the gdc-client submodule directory.
 Default: ./gdc-client
 
---gdc-client-path:
+`--gdc-client-path`:
 Path to the gdc-client executable.
 Default: ./gdc-client_exec
 
---build-gdc:
+`--build-gdc`:
 If specified, forces building the gdc-client executable from source (even if one already exists).
 
---n-processes:
+`--n-processes`:
 (Optional) Number of parallel download processes. Passed to gdc-client with -n. For example, --n-processes 4.
 
---verbose:
+`--verbose`:
 (Optional) Enable verbose output from gdc-client (passed as --debug).
 
 Example: Using 4 Processes with Verbose Output
