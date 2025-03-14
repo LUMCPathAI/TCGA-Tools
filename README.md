@@ -151,7 +151,7 @@ deactivate
 Submit the job with:
 
 ```bash
-sbatch tcga_download.sbatch
+sbatch shark_run.sbatch
 ```
 
 ### Contributing
