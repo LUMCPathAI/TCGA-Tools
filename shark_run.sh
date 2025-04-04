@@ -18,12 +18,15 @@ module load tools/miniconda/python3.9/4.12.0
 # Activate virtual environment
 source venv/bin/activate
 
+pip install scikit-learn
+
 echo "Running TCGA download..."
 venv/bin/python tcga_tools.py --datasets TCGA-LUSC TCGA-BRCA \
     --parent-dir "TCGA" \
     --manifest-dir "manifests" \
-    --raw-annotations-dir "raw_annotations"
-    --n-processes 4
+    --raw-annotations-dir "raw_annotations" \
+    --n-processes 4 \
+    --split 
 
 echo "TCGA download complete."
 deactivate
