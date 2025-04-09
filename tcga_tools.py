@@ -556,6 +556,78 @@ def create_separate_classification_annotations(dataset_dir: str, norm_name: str)
         final_df.to_csv(out_file, index=False)
         logging.info(f"Final classification annotation for '{col}' created at {out_file}")
 
+def create_final_grouped_stage_annotation(dataset_dir: str, norm_name: str):
+    """
+    Create final grouped stage annotation table by joining the mapping with the stage information from clinical data.
+    The stage information (e.g. 'Stage IIA', 'Stage IIB') is grouped by stripping trailing characters from the 
+    numeral part that are not valid Roman numeral letters (valid set: "IVXLCDM").
+    For example, 'Stage IIA' becomes 'Stage II' and 'Stage I' remains unchanged.
+    The final table columns: slide, patient, grouped_stage.
+    """
+    clinical_file = os.path.join(dataset_dir, f"clinical_{norm_name}.csv")
+    mapping_file = os.path.join(dataset_dir, f"sample_to_case_map_{norm_name}.csv")
+    if not os.path.exists(clinical_file) or not os.path.exists(mapping_file):
+        logging.error("Clinical file or mapping file not found. Cannot create final grouped stage annotation.")
+        return
+    clinical_df = pd.read_csv(clinical_file, dtype=str)
+    mapping_df = pd.read_csv(mapping_file, dtype=str)
+    
+    # Normalize column names for merging.
+    if "case_id" in clinical_df.columns:
+        clinical_df.rename(columns={"case_id": "patient"}, inplace=True)
+    if "case_id" in mapping_df.columns:
+        mapping_df.rename(columns={"case_id": "patient"}, inplace=True)
+    mapping_df.rename(columns={"full_slide_file": "slide"}, inplace=True)
+    mapping_df["slide"] = mapping_df["slide"].str.replace(r"\.(svs|tiff)$", "", regex=True)
+    
+    # Determine the stage column: prefer 'pathologic_stage', then 'clinical_stage', else any with "stage".
+    stage_col = None
+    for col in clinical_df.columns:
+        if col.lower() == "pathologic_stage":
+            stage_col = col
+            break
+    if stage_col is None:
+        for col in clinical_df.columns:
+            if col.lower() == "clinical_stage":
+                stage_col = col
+                break
+    if stage_col is None:
+        stage_cols = [col for col in clinical_df.columns if "stage" in col.lower()]
+        if stage_cols:
+            stage_col = stage_cols[0]
+    if stage_col is None:
+        logging.info("No stage column found in clinical data. Skipping grouped stage annotation creation.")
+        return
+
+    def group_stage(stage_str):
+        if not stage_str or pd.isna(stage_str):
+            return None
+        stage_str = stage_str.strip()
+        # Split the string into tokens; assume the numeral part is the last token.
+        tokens = stage_str.split()
+        if not tokens:
+            return stage_str
+        numeral = tokens[-1]
+        # Define the allowed characters in a valid Roman numeral.
+        allowed = "IV"
+        # Remove trailing characters from the numeral that are not allowed.
+        while len(numeral) > 1 and numeral[-1] not in allowed:
+            numeral = numeral[:-1]
+        tokens[-1] = numeral
+        return " ".join(tokens)
+    
+    #Filter any rows that do not have "I", "II", "III", "IV", "V", "VI" in the stage column
+    clinical_df = clinical_df[clinical_df[stage_col].str.contains(r"[IV]", na=False)]
+    # Apply the grouping logic to the chosen stage column.
+    clinical_df["grouped_stage"] = clinical_df[stage_col].apply(group_stage)
+    
+    # Merge the clinical data with the slide mapping so that each slide gets its grouped stage.
+    final_df = pd.merge(mapping_df, clinical_df[["patient", "grouped_stage"]], on="patient", how="inner")
+    final_df = final_df[["slide", "patient", "grouped_stage"]]
+    out_file = os.path.join(dataset_dir, f"final_grouped_stage_annotation_{norm_name}.csv")
+    final_df.to_csv(out_file, index=False)
+    logging.info(f"Final grouped stage annotation file created at {out_file}")
+
 def create_final_survival_annotations(dataset_dir: str, norm_name: str):
     """
     Create separate final survival annotation tables for days, months, and quantiles.
@@ -606,6 +678,8 @@ def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str,
     logging.info("Created final survival annotations (days, months, quantiles).")
     create_separate_classification_annotations(dataset_dir, norm_name)
     logging.info("Created final classification annotations.")
+    create_final_grouped_stage_annotation(dataset_dir, norm_name)
+    logging.info("Created final grouped stage annotation.")
 
 def main():
     """
