@@ -37,6 +37,7 @@ import pandas as pd
 from tqdm import tqdm
 import json  # For JSON processing
 from sklearn.model_selection import train_test_split
+import glob
 
 def setup_logging():
     """Configure logging for the script."""
@@ -342,6 +343,109 @@ def postprocess_slides(dataset_dir: str, norm_name: str):
     else:
         logging.warning("No slide mappings were created.")
 
+def download_project_tpm(project_id: str, output_dir: str = None) -> str:
+    """
+    Download all open-access HTSeq - TPM RNA-Seq files for a given TCGA project.
+
+    Args:
+        project_id (str): TCGA project name, e.g. "TCGA-BRCA".
+        output_dir (str): Directory to save TPM files; defaults to '{project_id}_TPM'.
+    Returns:
+        str: Path to the directory containing downloaded TPM files and metadata.
+    """
+    if output_dir is None:
+        output_dir = f"{project_id}_TPM"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Query GDC API for HTSeq - TPM files
+    api_url = "https://api.gdc.cancer.gov/files"
+    filters = {
+        "op": "and",
+        "content": [
+            {"op": "in", "content": {"field": "cases.project.project_id", "value": [project_id]}},
+            {"op": "in", "content": {"field": "data_type", "value": ["Gene Expression Quantification"]}},
+            {"op": "in", "content": {"field": "analysis.workflow_type", "value": ["HTSeq - TPM"]}},
+            {"op": "in", "content": {"field": "access", "value": ["open"]}},
+        ]
+    }
+    params = {"filters": filters, "fields": "file_id,file_name,cases.submitter_id", "format": "JSON", "size": 10000}
+
+    print(f"Querying GDC for {project_id} TPM files...")
+    resp = requests.post(api_url, headers={"Content-Type": "application/json"}, data=json.dumps(params))
+    resp.raise_for_status()
+    hits = resp.json()["data"]["hits"]
+    if not hits:
+        raise RuntimeError(f"No TPM files found for project {project_id}")
+
+    # Build metadata and download
+    meta = []
+    for entry in hits:
+        fid = entry["file_id"]
+        fname = entry["file_name"]
+        case_id = entry.get("cases.submitter_id")
+        if isinstance(case_id, list):
+            case_id = case_id[0]
+        meta.append({"file_id": fid, "file_name": fname, "case_id": case_id})
+
+    meta_df = pd.DataFrame(meta)
+    meta_csv = os.path.join(output_dir, "metadata_tpm.csv")
+    meta_df.to_csv(meta_csv, index=False)
+
+    print(f"Found {len(meta_df)} files; downloading...")
+    for _, row in tqdm(meta_df.iterrows(), total=len(meta_df)):
+        url = f"https://api.gdc.cancer.gov/data/{row['file_id']}"
+        out_path = os.path.join(output_dir, row["file_name"])
+        if os.path.exists(out_path):
+            continue
+        r = requests.get(url, stream=True)
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+    print(f"Download complete: {output_dir}")
+    return output_dir
+
+
+def create_slide_gene_expression_matrix(dataset_dir: str, tpm_dir: str, norm_name: str) -> str:
+    """
+    Build a slide-level gene expression matrix (TPM) and save annotation file.
+
+    Args:
+        dataset_dir (str): Path to the TCGA dataset directory (where slide-to-case map is saved).
+        tpm_dir (str): Directory returned by download_project_tpm().
+        norm_name (str): Normalized dataset name (e.g., 'tcga-brca').
+    Returns:
+        str: Path to the CSV annotation file (slides x genes matrix).
+    """
+    # Load slide-to-case map
+    map_file = os.path.join(dataset_dir, f"sample_to_case_map_{norm_name}.csv")
+    map_df = pd.read_csv(map_file)
+
+    # Load TPM metadata
+    meta_file = os.path.join(tpm_dir, "metadata_tpm.csv")
+    meta_df = pd.read_csv(meta_file)
+
+    # Merge slides with TPM samples by case_id
+    merged = pd.merge(map_df, meta_df, left_on="patient", right_on="case_id", how="inner")
+    if merged.empty:
+        raise RuntimeError("No matching cases between slides and RNA-Seq metadata.")
+
+    # Assemble expression matrix
+    expr_dfs = []
+    for _, row in merged.iterrows():
+        slide_name = os.path.splitext(row['full_slide_file'])[0]
+        tpm_path = os.path.join(tpm_dir, row['file_name'])
+        df = pd.read_csv(tpm_path, sep="\t", header=None, names=["gene_id", slide_name], index_col="gene_id")
+        expr_dfs.append(df)
+
+    # Concatenate on gene_id
+    expr_mat = pd.concat(expr_dfs, axis=1)
+    out_file = os.path.join(dataset_dir, f"slide_gene_expression_{norm_name}.csv")
+    expr_mat.to_csv(out_file)
+    print(f"Expression matrix saved to: {out_file}")
+    return out_file
+
 def create_separate_classification_annotations(dataset_dir: str, norm_name: str):
     """
     Create separate final classification annotation tables for each classification label.
@@ -624,7 +728,11 @@ def create_final_grouped_stage_annotation(dataset_dir: str, norm_name: str):
     # Merge the clinical data with the slide mapping so that each slide gets its grouped stage.
     final_df = pd.merge(mapping_df, clinical_df[["patient", "grouped_stage"]], on="patient", how="inner")
     final_df = final_df[["slide", "patient", "grouped_stage"]]
-    out_file = os.path.join(dataset_dir, f"final_grouped_stage_annotation_{norm_name}.csv")
+
+    #Rename the column 'grouped_stage' to 'category'
+    final_df.rename(columns={"grouped_stage": "category"}, inplace=True)
+    # Save the final grouped stage annotation file.
+    out_file = os.path.join(dataset_dir, f"final_classification_annotation_groupstage_{norm_name}.csv")
     final_df.to_csv(out_file, index=False)
     logging.info(f"Final grouped stage annotation file created at {out_file}")
 
@@ -636,6 +744,56 @@ def create_final_survival_annotations(dataset_dir: str, norm_name: str):
     create_final_survival_annotations_days(dataset_dir, norm_name)
     create_final_survival_annotations_months(dataset_dir, norm_name)
     create_final_survival_annotations_quantiles(dataset_dir, norm_name)
+
+def write_if_not_exists(df: pd.DataFrame, path: str, **to_csv_kwargs):
+    if os.path.exists(path):
+        logging.info(f"{path} already exists -> skipping")
+    else:
+        df.to_csv(path, index=False, **to_csv_kwargs)
+        logging.info(f"Wrote {path}")
+
+def create_source_prediction(parent_dir: str,
+                             dataset_names: list[str],
+                             split_ratio: float = 0.9,
+                             seed: int = 42):
+    out_path = os.path.join(parent_dir, "source_prediction.csv")
+    if os.path.exists(out_path):
+        print(f"{out_path} already exists, skipping.")
+        return
+
+    frames = []
+    for ds in dataset_names:
+        norm = ds.lower()
+        map_file = os.path.join(parent_dir, ds, f"sample_to_case_map_{norm}.csv")
+        if not os.path.exists(map_file):
+            print(f"  ✗ mapping file not found for {ds}: {map_file}")
+            continue
+        df = pd.read_csv(map_file, dtype=str)
+        # strip extension off 'full_slide_file'
+        df["slide"] = df["full_slide_file"].str.replace(r"\.(svs|tiff)$", "", regex=True)
+        df = df[["slide", "patient"]]
+        df["source"] = ds
+        frames.append(df)
+
+    if not frames:
+        print("No mappings loaded; aborting.")
+        return
+
+    all_df = pd.concat(frames, ignore_index=True)
+    # Now stratify-split on 'source'
+    train_df, test_df = train_test_split(
+        all_df,
+        stratify=all_df["source"],
+        test_size=(1 - split_ratio),
+        random_state=seed
+    )
+    train_df["dataset"] = "train"
+    test_df["dataset"] = "test"
+    result = pd.concat([train_df, test_df], ignore_index=True)
+
+    result.to_csv(out_path, index=False)
+    print(f"Saved source prediction to {out_path}")
+
 
 def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str,
                      raw_annotations_dir: str, gdc_client_executable: str,
@@ -664,6 +822,8 @@ def download_dataset(dataset_name: str, parent_dir: str, manifest_dir: str,
         max_retries=5,
         sample_sheet_path=None
     )
+    logging.info(f"Downloaded files for dataset {dataset_name} to {dataset_dir}")
+    logging.info(f"Looking for clinical annotations in {raw_annotations_dir}, expected file: clinical.project-{norm_name}.json")
     clinical_annotation_src = os.path.join(raw_annotations_dir, f"clinical.project-{norm_name}.json")
     if os.path.exists(clinical_annotation_src):
         process_clinical_data_json(clinical_annotation_src, dataset_dir, norm_name, sample_sheet_path=None)
@@ -710,6 +870,10 @@ def main():
                         help="If set, add a 'dataset' column to final annotations indicating 'train' or 'test'")
     parser.add_argument("--split-ratio", type=float, default=0.9,
                         help="Train split ratio (default: 0.9, meaning 90%% train, 10%% test)")
+    parser.add_argument("--create-source-prediction", action="store_true",
+                        help="If set, create a source prediction file that combines all datasets' splits with a 'source' column")
+    parser.add_argument("--rna-seq-tpm", action="store_true", default=False,
+                        help="If set, download RNA-Seq TPM files for the specified datasets")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for splitting (default: 42)")
     args = parser.parse_args()
@@ -733,6 +897,17 @@ def main():
                              verbose=args.verbose)
         except Exception as e:
             logging.error(f"Error processing dataset {dataset}: {e}")
+
+        if args.rna_seq_tpm:
+            # Download TPM files for the dataset
+            tpm_dir = download_project_tpm(project_id=dataset, output_dir=os.path.join(args.parent_dir, f"{dataset}_TPM"))
+            if tpm_dir:
+                # Create slide-level gene expression matrix
+                create_slide_gene_expression_matrix(dataset_dir=os.path.join(args.parent_dir, dataset),
+                                                    tpm_dir=tpm_dir,
+                                                    norm_name=normalize_dataset_name(dataset))
+            else:
+                logging.error(f"Failed to download TPM files for {dataset}")
     if args.split:
         for dataset in args.datasets:
             norm_name = normalize_dataset_name(dataset)
@@ -744,10 +919,26 @@ def main():
                     split_and_flag_annotations(surv_file, stratify_column="stratify_surv", split_ratio=args.split_ratio, seed=args.seed)
             # Process each final classification file (each separate file)
             for file in os.listdir(dataset_dir):
-                if file.startswith(f"final_classification_annotation_{norm_name}_") and file.endswith(".csv"):
+                if file.startswith(f"final_classification_annotation") and file.endswith(".csv"):
                     class_file = os.path.join(dataset_dir, file)
                     split_and_flag_annotations(class_file, stratify_column="category", split_ratio=args.split_ratio, seed=args.seed)
+    
     logging.info("All datasets have been processed.")
+
+    if args.create_source_prediction:
+        #If no datasets were specified, use all datasets in the parent directory
+        if not args.datasets:
+            args.datasets = [d for d in os.listdir(args.parent_dir) if os.path.isdir(os.path.join(args.parent_dir, d))]
+            if not args.datasets:
+                logging.error("No datasets found in the parent directory. Cannot create source prediction file.")
+                return
+        # Create source prediction file with all datasets
+        create_source_prediction(
+            parent_dir=args.parent_dir,
+            dataset_names=args.datasets,
+            seed=args.seed
+        )
+        logging.info("Source prediction file created.")
 
 if __name__ == "__main__":
     main()
