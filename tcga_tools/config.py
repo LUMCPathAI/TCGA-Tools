@@ -88,11 +88,16 @@ MOLECULAR_CATEGORIES = [
     "Simple Nucleotide Variation",
     "Transcriptome Profiling",
     "Copy Number Variation",
-    "Copy Number Segment",
     "DNA Methylation",
+    "Somatic Structural Variation", 
+    "Proteome Profiling",
+    "Sequencing Reads",
 ]
 
-REPORT_DATA_TYPES = ["Pathology Report", "Clinical Supplement", "Follow-up"]
+REPORT_DATA_TYPES = [
+    "Pathology Report",
+    "Clinical Supplement",
+]
 
 # Very light-weight mapping from common extensions to preferred criteria.
 # Preference order: data_format -> data_type -> filename suffix fallback.

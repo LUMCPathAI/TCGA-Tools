@@ -6,7 +6,7 @@ import pandas as pd
 from .api import GDCClient
 from .filters import Filters as F
 from .config import DEFAULT_CASE_FIELDS, CLINICAL_FIELDS, DIAGNOSIS_FIELDS, MOLECULAR_CATEGORIES, REPORT_DATA_TYPES
-from .utils import flatten_hits
+from .utils import flatten_hits, ensure_case_sample_columns
 
 
 def build_clinical_csv(client: GDCClient, case_ids: Iterable[str]) -> pd.DataFrame:
@@ -30,11 +30,32 @@ def build_diagnosis_csv(client: GDCClient, case_ids: Iterable[str]) -> pd.DataFr
 
 
 def build_molecular_index(client: GDCClient, project_id: str, case_ids: Iterable[str]) -> pd.DataFrame:
-    """Index of available molecular files (DNA/RNA/CNV/Methylation) from *files* endpoint."""
+    """
+    Index molecular files using repository-side semantics:
+      - data_category in molecular buckets (SNV, CNV, RNA, methylation, …), OR
+      - data_type in a handful of common molecular types (defensive).
+    """
+    molecular_types = [
+        # RNA
+        "Gene Expression Quantification", "miRNA Expression Quantification",
+        # SNV
+        "Aggregated Somatic Mutation", "Simple Nucleotide Variation",
+        # CNV
+        "Copy Number Segment", "Masked Copy Number Segment",
+        # Methylation
+        "Methylation Beta Value", "Methylation Probe Beta Value",
+        # Proteomics (optional)
+        "Protein Expression Quantification",
+    ]
+
     filters = F.AND(
         F.EQ("cases.project.project_id", project_id),
-        F.IN("data_category", MOLECULAR_CATEGORIES),
         F.IN("cases.case_id", list(case_ids)),
+        F.OR(
+            F.IN("files.data_category", MOLECULAR_CATEGORIES),
+            F.IN("files.data_type", molecular_types),
+        ),
+        F.IN("cases.case_id", list(case_ids))
     )
     fields = [
         "id",
@@ -47,13 +68,15 @@ def build_molecular_index(client: GDCClient, project_id: str, case_ids: Iterable
         "cases.submitter_id",
         "cases.samples.sample_type",
         "cases.samples.sample_id",
+        "cases.project.project_id",
     ]
     hits = client.paged_query("files", filters, fields)
-    return flatten_hits(hits)
+    df = flatten_hits(hits)
+    df = ensure_case_sample_columns(df) 
+    return df
 
 
 def build_reports_index(client: GDCClient, project_id: str, case_ids: Iterable[str]) -> pd.DataFrame:
-    """Index of free-text reports for each case (clinical/pathology PDFs/XML)."""
     filters = F.AND(
         F.EQ("cases.project.project_id", project_id),
         F.IN("data_category", ["Clinical"]),
@@ -68,6 +91,9 @@ def build_reports_index(client: GDCClient, project_id: str, case_ids: Iterable[s
         "data_format",
         "cases.case_id",
         "cases.submitter_id",
+        "cases.project.project_id",
     ]
     hits = client.paged_query("files", filters, fields)
-    return flatten_hits(hits)
+    df = flatten_hits(hits)
+    df = ensure_case_sample_columns(df)
+    return df

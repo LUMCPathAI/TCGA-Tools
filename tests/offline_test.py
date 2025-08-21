@@ -12,31 +12,25 @@ class FakeClient:
         pass
 
     def paged_query(self, endpoint, filters, fields, size=5000):
-        # Minimal mock behavior based on endpoint
         if endpoint == "files":
-            # Return two files mapped to two cases
             return [
                 {
                     "id": "F1",
                     "file_name": "slide1.svs",
                     "data_format": "SVS",
-                    "cases": {
-                        "case_id": "C1",
-                        "submitter_id": "TCGA-XX-0001",
-                        "project": {"project_id": "TCGA-LUSC"},
-                        "samples": [{"sample_type": "Primary Tumor"}],
-                    },
+                    "cases.case_id": "C1",                 # flattened
+                    "cases.submitter_id": "TCGA-XX-0001", # flattened
+                    "cases.project.project_id": "TCGA-LUSC",
+                    "cases.samples.sample_type": "Primary Tumor",  # flattened
                 },
                 {
                     "id": "F2",
                     "file_name": "slide2.svs",
                     "data_format": "SVS",
-                    "cases": {
-                        "case_id": "C2",
-                        "submitter_id": "TCGA-XX-0002",
-                        "project": {"project_id": "TCGA-LUSC"},
-                        "samples": [{"sample_type": "Solid Tissue Normal"}],
-                    },
+                    "cases.case_id": "C2",
+                    "cases.submitter_id": "TCGA-XX-0002",
+                    "cases.project.project_id": "TCGA-LUSC",
+                    "cases.samples.sample_type": "Solid Tissue Normal",
                 },
             ]
         return []
@@ -105,3 +99,5 @@ def test_download_with_all_annotations(monkeypatch):
 
         # Downloads directory
         assert (out["data_dir"]).exists()
+
+        print("Successfully verified data directory creation.")

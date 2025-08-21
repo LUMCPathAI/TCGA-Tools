@@ -4,6 +4,8 @@ from .config import SAMPLE_TYPE_TO_GROUP
 
 
 def build_patient_groups(files_df: pd.DataFrame) -> pd.DataFrame:
+    
+    print(files_df)
     """Return a groups table (one row per case) with basic sample-type grouping.
 
     Columns: case_id, submitter_id, project_id, has_tumor, has_normal, group

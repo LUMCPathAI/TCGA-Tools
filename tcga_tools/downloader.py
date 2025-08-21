@@ -14,13 +14,28 @@ from .config import (
     DEFAULT_FILE_FIELDS,
     FILETYPE_PREFERENCES,
 )
-from .utils import ensure_dir, read_env_token, to_csv, flatten_hits, save_json, write_text_log
+from .utils import ensure_dir, read_env_token, to_csv, flatten_hits, save_json, write_text_log, ensure_case_sample_columns
 from .annotations import build_clinical_csv, build_molecular_index, build_reports_index, build_diagnosis_csv
 from .grouping import build_patient_groups
 from .analytics import generate_statistics_and_visualizations
 
 log = logging.getLogger("tcga_tools")
 
+
+DATATYPE_FILTERS = {
+    "wsi": {
+        "filetypes": [".svs"],
+        "extra": [F.EQ("experimental_strategy", "Diagnostic Slide")],
+    },
+    "rna-seq": {
+        "filetypes": None,  # leave user filetypes
+        "extra": [F.EQ("data_type", "Gene Expression Quantification")],
+    },
+    "cnv": {
+        "filetypes": None,
+        "extra": [F.EQ("data_type", "Copy Number Segment")],
+    },
+}
 
 def _filetype_filters(exts: Iterable[str]) -> List[Dict]:
     """Build a filter disjunction for any of the provided filetype extensions.
@@ -109,17 +124,53 @@ def _run_single_dataset(
     visualizations: bool,
     log_transforms: bool,
     client: GDCClient,
+    datatype: str | list[str] | None = None
 ) -> Dict[str, Optional[Path]]:
-    filters = _files_query_filters(dataset_name, filetypes)
+
+    # --- datatype handling ---
+    if datatype:
+        dtypes = [datatype] if isinstance(datatype, str) else list(datatype)
+        dtype_filters = []
+        all_filetypes = []
+
+        for dt in dtypes:
+            spec = DATATYPE_FILTERS.get(dt.lower())
+            if spec is None:
+                raise ValueError(f"Unsupported datatype: {dt}")
+            if spec["filetypes"]:
+                all_filetypes.extend(spec["filetypes"])
+            dtype_filters.append(F.AND(
+                F.EQ("cases.project.project_id", dataset_name),
+                *spec["extra"],
+            ))
+
+        # combine across datatypes with OR
+        filters = F.OR(*dtype_filters)
+        if all_filetypes:
+            # if datatypes specify filetypes, enforce
+            filetypes = all_filetypes
+
+        # still append filetype filters if present
+        if filetypes:
+            ft_filters = _filetype_filters(filetypes)
+            filters = F.AND(filters, ft_filters[0] if len(ft_filters) == 1 else F.OR(*ft_filters))
+
+    else:
+        filters = _files_query_filters(dataset_name, filetypes)
+        
+    # Print the list of filters used
+    print("FILTERS:")
+    print(filters)
 
     # 1) Enumerate files + metadata
     hits = client.paged_query("files", filters, fields)
     files_df = flatten_hits(hits)
-    files_df = _patient_column(files_df)
+    files_df = _ensure_case_sample_columns(files_df) 
     files_csv = to_csv(files_df, output_dir / "files_metadata.csv")
-
     # 2) Write groups.csv
     groups_df = build_patient_groups(files_df)
+    print("GROUPS:")
+    print(groups_df)
     groups_csv = to_csv(groups_df, output_dir / "groups.csv") if not groups_df.empty else None
 
     # 3) Download data (unless raw)
@@ -206,7 +257,7 @@ def _run_single_dataset(
     if raw:
         preview = {
             "dataset_name": dataset_name,
-            "filetypes": list(filetypes),
+            "filetypes": list(filetypes or []),   # <= guard here
             "files_found": int(len(files_df)),
             "example_files": files_df.head(10).to_dict(orient="records"),
             "grouping_summary": groups_df["group"].value_counts(dropna=False).to_dict() if not groups_df.empty else {},
@@ -227,7 +278,7 @@ def _run_single_dataset(
 
 def download(
     dataset_name: Union[str, Iterable[str]],
-    filetypes: Iterable[str] = (".svs",),
+    filetypes: list[str] | None = None,
     annotations: Iterable[str] | None = None,
     output_dir: str | os.PathLike = ".",
     *,
@@ -239,6 +290,7 @@ def download(
     statistics: bool = False,
     visualizations: bool = False,
     log_transforms: bool = True,
+    datatype: str | None = None
 ) -> Dict[str, Optional[Path]]:
     """High-level convenience wrapper used as ``tcga_tools.Download``.
 
@@ -254,6 +306,10 @@ def download(
     token = read_env_token()
     client = GDCClient(token=token)
 
+
+    if filetypes is None and (datatype and str(datatype).lower() == "wsi"):
+        filetypes = [".svs"]
+    
     # Normalize dataset list
     datasets: List[str] = list(dataset_name) if isinstance(dataset_name, (list, tuple, set)) else [str(dataset_name)]
 
@@ -278,6 +334,7 @@ def download(
             visualizations=visualizations,
             log_transforms=log_transforms,
             client=client,
+            datatype=datatype
         )
         # Collect for aggregation
         multi_index[ds] = {k: str(v) for k, v in art.items() if v is not None}
@@ -304,7 +361,7 @@ def download(
         run_log = {
             "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
             "datasets": datasets,
-            "filetypes": list(filetypes),
+            "filetypes": list(filetypes or []),
             "annotations": list(annotations or []),
             "raw": raw,
             "statistics": statistics,
@@ -317,7 +374,7 @@ def download(
         save_json(run_log, Path(out_root) / "run_log.json")
         write_text_log([
             f"Datasets: {', '.join(datasets)}",
-            f"Filetypes: {', '.join(filetypes)}",
+            f"Filetypes: {', '.join(filetypes or [])}",
             f"Annotations: {', '.join(annotations or [])}",
             f"Raw={raw}, Stats={statistics}, Viz={visualizations}",
         ], Path(out_root) / "run_log.txt")
@@ -328,3 +385,53 @@ def download(
     else:
         index_path = save_json(multi_index, Path(out_root) / "multi_index.json")
         return {"multi_index_json": index_path}
+
+from typing import Any
+
+def _ensure_case_sample_columns(files_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    GDC /files returns nested arrays: cases[] and cases[].samples[].
+    This function derives flat, analysis-ready columns:
+      - cases.case_id
+      - cases.submitter_id
+      - cases.project.project_id
+      - cases.samples.sample_type
+    If multiple items exist, we take the *first* present (typical for TCGA SVS).
+    """
+    if "cases" in files_df.columns:
+        def first_case(v: Any) -> dict:
+            if isinstance(v, list) and v:
+                return v[0] or {}
+            return {}
+
+        case_series = files_df["cases"].map(first_case)
+
+        def get_case_project_id(c: dict) -> Optional[str]:
+            pr = c.get("project") or {}
+            return pr.get("project_id")
+
+        def first_sample_type(c: dict) -> Optional[str]:
+            samples = c.get("samples") or []
+            for s in samples:
+                st = s.get("sample_type")
+                if st:
+                    return st
+            return None
+
+        files_df["cases.case_id"] = case_series.map(lambda c: c.get("case_id"))
+        files_df["cases.submitter_id"] = case_series.map(lambda c: c.get("submitter_id"))
+        files_df["cases.project.project_id"] = case_series.map(get_case_project_id)
+        files_df["cases.samples.sample_type"] = case_series.map(first_sample_type)
+
+        # Optional: drop the raw nested column to avoid confusion
+        # files_df = files_df.drop(columns=["cases"])
+
+    # Ensure a convenient 'patient' column
+    if "cases.submitter_id" in files_df.columns and files_df["cases.submitter_id"].notna().any():
+        files_df["patient"] = files_df["cases.submitter_id"]
+    elif "cases.case_id" in files_df.columns:
+        files_df["patient"] = files_df["cases.case_id"]
+    else:
+        files_df["patient"] = pd.NA
+
+    return files_df

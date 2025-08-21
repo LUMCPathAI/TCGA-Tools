@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Optional
-
+import json
 import requests
 
 from .config import GDC_BASE_URL
@@ -19,6 +19,7 @@ class GDCClient:
         self.base_url = base_url or GDC_BASE_URL
         self.session = requests.Session()
         self.timeout = timeout
+        self.last_queries: list[dict[str, Any]] = []
         if token:
             self.session.headers.update({"X-Auth-Token": token})
 
@@ -67,6 +68,15 @@ class GDCClient:
             from_ = from_ + size
             if len(all_hits) >= total or not hits:
                 break
+            
+            
+        self.last_queries.append({
+            "endpoint": endpoint,
+            "filters": filters,
+            "requested_fields": list(fields) if fields else None,
+            "returned_count": len(all_hits),
+        })
+        
         return all_hits
 
     def cases_query(self, filters: Dict[str, Any], fields: Optional[Iterable[str]], size: int = 5000) -> List[Dict[str, Any]]:
@@ -106,12 +116,13 @@ class GDCClient:
         return target_path
 
     def download_manifest_for_query(self, filters: Dict[str, Any], *, manifest_path: str) -> str:
-        """Save a TSV manifest using return_type=manifest on /files for a given filter set.
-        Useful with the GDC Data Transfer Tool for robust, resumable downloads.
+        """
+        Save a TSV manifest using return_type=manifest on /files for a given filter set.
+        As per GDC docs, 'filters' must be JSON-encoded in the query params.
         """
         url = f"{self.base_url}/files"
         params = {
-            "filters": requests.utils.json.dumps(filters),
+            "filters": json.dumps(filters),
             "return_type": "manifest",
         }
         r = self.session.get(url, params=params, timeout=self.timeout)
