@@ -4,6 +4,11 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
+import time
+import random
+from http.client import IncompleteRead
+from requests.exceptions import ChunkedEncodingError, ConnectionError, ReadTimeout
+from urllib3.exceptions import ProtocolError
 
 import pandas as pd
 from tqdm import tqdm
@@ -109,6 +114,87 @@ def _collect_wsi_metadata(file_paths: List[Path]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _robust_download_single(
+    client: GDCClient,
+    fid: str,
+    target_path: Path,
+    *,
+    related_files: bool = True,
+    expected_size: Optional[int] = None,
+    max_retries: int = 5,
+    base_sleep: float = 2.0,
+    skip_existing: bool = True,
+) -> bool:
+    """
+    Try to download one file with retries and atomic rename.
+    Skips if target already exists and (optionally) matches expected_size.
+    """
+    # Skip if already there (+ size check if we have it)
+    if skip_existing and target_path.exists():
+        if expected_size is None:
+            log.info(f"[skip] {target_path.name} already exists (no size check)")
+            return True
+        else:
+            try:
+                if target_path.stat().st_size == expected_size:
+                    log.info(f"[skip] {target_path.name} already complete ({expected_size} bytes)")
+                    return True
+                else:
+                    log.warning(
+                        f"[redo] {target_path.name} exists but size mismatch "
+                        f"({target_path.stat().st_size} != {expected_size}); re-downloading."
+                    )
+            except Exception:
+                pass
+
+    tmp = target_path.with_suffix(target_path.suffix + ".part")
+    # Clean stale tmp
+    if tmp.exists():
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            client.download_single(fid, target_path=str(tmp), related_files=related_files)
+
+            # Verify size if available
+            if expected_size is not None:
+                got = tmp.stat().st_size
+                if got != expected_size:
+                    raise IOError(f"Downloaded size {got} != expected {expected_size}")
+
+            # Atomic replace
+            os.replace(tmp, target_path)
+            return True
+
+        except (ChunkedEncodingError, ProtocolError, IncompleteRead, ConnectionError, ReadTimeout) as e:
+            # Network/stream hiccup: backoff and retry
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            if attempt == max_retries:
+                log.error(f"[fail] {target_path.name} after {attempt} attempts: {e}")
+                return False
+            sleep_s = base_sleep * (2 ** (attempt - 1)) * (1.0 + random.random() * 0.25)
+            log.warning(f"[retry {attempt}/{max_retries}] {target_path.name}: {e} — sleeping {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+
+        except Exception as e:
+            # Other unexpected errors: don't loop forever; surface immediately
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            log.error(f"[error] {target_path.name}: {e}")
+            return False
+
+    return False  # Shouldn't reach here
+
 def _run_single_dataset(
     *,
     dataset_name: str,
@@ -180,19 +266,37 @@ def _run_single_dataset(
 
     if not raw and not files_df.empty:
         id_to_name = dict(zip(files_df.get("id", []), files_df.get("file_name", [])))
+        id_to_size = dict(zip(files_df.get("id", []), files_df.get("file_size", []))) if "file_size" in files_df.columns else {}
+
         uuids = list(id_to_name.keys())
         if tar_archives and uuids:
             tar_path = output_dir / f"{dataset_name}_files.tar.gz"
-            client.download_tar(uuids, target_path=str(tar_path), uncompressed=False)
+            # Optional: you can skip if tar already exists.
+            if not tar_path.exists():
+                client.download_tar(uuids, target_path=str(tar_path), uncompressed=False)
+            else:
+                log.info(f"[skip] tar exists: {tar_path}")
             paths_downloaded.append(tar_path)
         else:
+            failed: List[str] = []
             for fid, fname in tqdm(id_to_name.items(), desc=f"Downloading {dataset_name}"):
                 target = out_data_dir / fname
-                client.download_single(fid, target_path=str(target), related_files=related_files)
-                paths_downloaded.append(target)
-        if manifest_also:
-            manifest_path = output_dir / "gdc_manifest.tsv"
-            client.download_manifest_for_query(filters, manifest_path=str(manifest_path))
+                ok = _robust_download_single(
+                    client,
+                    fid,
+                    target,
+                    related_files=related_files,
+                    expected_size=id_to_size.get(fid),  # may be None
+                    max_retries=5,
+                    base_sleep=2.0,
+                    skip_existing=True,
+                )
+                if ok:
+                    paths_downloaded.append(target)
+                else:
+                    failed.append(fname)
+            if failed:
+                log.warning(f"{len(failed)} file(s) failed to download after retries: {failed[:5]}{'...' if len(failed)>5 else ''}")
 
     # 3b) Optional WSI metadata enrichment
     wsi_meta_csv: Optional[Path] = None

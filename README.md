@@ -46,6 +46,7 @@ import tcga_tools as tt
 tt.Download(
     dataset_name="TCGA-LUSC",
     filetypes=[".svs"],
+    datatype=["WSI"],
     annotations=["clinical", "molecular", "report"],
     output_dir="./TCGA-LUSC",
     statistics=True,
