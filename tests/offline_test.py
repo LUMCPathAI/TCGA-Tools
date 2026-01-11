@@ -1,10 +1,11 @@
 import os
-import types
 import tempfile
 import pandas as pd
+from typing import Optional
 
 import tcga_tools
 from tcga_tools import downloader as _dl
+from tcga_tools.ports import DownloadResult
 
 
 class FakeClient:
@@ -76,9 +77,25 @@ class FakeClient:
         return manifest_path
 
 
+class FakeDownloader:
+    def download_single(self, uuid: str, *, path: str, name: Optional[str] = None) -> DownloadResult:
+        os.makedirs(path, exist_ok=True)
+        filename = name or uuid
+        target = os.path.join(path, filename)
+        open(target, "wb").close()
+        return DownloadResult(path=target, filename=filename)
+
+    def download_multiple(self, uuids, *, path: str) -> DownloadResult:
+        os.makedirs(path, exist_ok=True)
+        target = os.path.join(path, "gdc_download.tar.gz")
+        open(target, "wb").close()
+        return DownloadResult(path=target, filename="gdc_download.tar.gz")
+
+
 def test_download_with_all_annotations(monkeypatch):
     # Patch the real client in the downloader to use our FakeClient
     monkeypatch.setattr(_dl, "GDCClient", FakeClient)
+    monkeypatch.setattr(_dl, "GdcApiWrapperDownloader", FakeDownloader)
 
     with tempfile.TemporaryDirectory() as d:
         out = tcga_tools.Download(

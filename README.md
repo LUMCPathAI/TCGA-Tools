@@ -13,7 +13,8 @@
 - Be resilient to missing or sparse fields across projects.
 
 ## 🚀 Features
-- Easy interface to the GDC API.
+- Clean, modular architecture with explicit ports/adapters for GDC and TCIA.
+- GDC and TCIA downloads built on top of the [`gdc-api-wrapper`](https://github.com/histolab/gdc-api-wrapper).
 - Multi-dataset support (download one or multiple TCGA projects at once).
 - Annotation options:  
   - `clinical`: survival, treatment outcomes, patient metadata  
@@ -28,10 +29,21 @@
 
 ## 📦 Installation
 
-### From PyPI 
+### From PyPI (pip)
 ```bash
 pip install tcga-tools
 ```
+
+### From PyPI (uv)
+```bash
+uv pip install tcga-tools
+```
+
+### Optional Pathology Dependencies (TCIA + GDC wrapper)
+```bash
+pip install gdc-api-wrapper
+```
+
 ### From Source
 ```bash
 git clone https://github.com/LUMCPathAI/TCGA-Tools.git
@@ -60,6 +72,81 @@ tt.Download(
     annotations="all",                                     # fetch everything
     output_dir="./TCGA",
 )
+```
+
+## 🧬 Pathology Portal (TCGA + TCIA)
+Use the high-level portal to query pathology metadata and download slides from
+TCGA (GDC) and TCIA using clean, modular services.
+
+```python
+from tcga_tools.pathology import PathologyDataPortal
+from tcga_tools.services.tcia_pathology import TciaSeriesQuery
+
+portal = PathologyDataPortal()
+
+# --- TCIA: SOP Instance lookup and downloads ---
+query = TciaSeriesQuery(series_instance_uid="uid.series.instance", format_="JSON")
+sop_result = portal.list_tcia_sop_instance_uids(query)
+portal.download_tcia_series(series_instance_uid="uid.series.instance", output_dir="./TCIA")
+
+# --- TCGA: download pathology files via GDC wrapper ---
+tcga_files = portal.download_tcga_project(
+    project_id="TCGA-LUSC",
+    filetypes=[".svs"],
+    output_dir="./TCGA-LUSC",
+)
+```
+
+## 📚 TCIA Pathology Workflows
+TCIA endpoints supported via the wrapper:
+- SOPInstanceUID lookup for a SeriesInstanceUID (`sop_instance_uids`)
+- Single-image download for a SeriesInstanceUID + SOPInstanceUID
+- Series download as a zip file
+
+## ✅ Usage Examples
+
+### 1) Download all TCGA lung slides with subtype labels + clinical endpoints
+```python
+import tcga_tools as tt
+
+tt.Download(
+    dataset_name=["TCGA-LUAD", "TCGA-LUSC"],
+    filetypes=[".svs"],
+    annotations=["clinical", "diagnosis"],
+    output_dir="./TCGA-LUNG",
+)
+```
+
+### 2) Download all TCGA-SKCM slides with genetic information
+```python
+import tcga_tools as tt
+
+tt.Download(
+    dataset_name="TCGA-SKCM",
+    filetypes=[".svs"],
+    annotations=["molecular"],
+    output_dir="./TCGA-SKCM",
+)
+```
+
+### 3) Download all TCIA radiology and pathology images from a dataset
+```python
+from tcga_tools.pathology import PathologyDataPortal
+from tcga_tools.services.tcia_pathology import TciaSeriesQuery
+
+portal = PathologyDataPortal()
+
+# Suppose you already have SeriesInstanceUIDs for a TCIA collection
+series_uids = [
+    "uid.series.instance.1",
+    "uid.series.instance.2",
+]
+
+for series_uid in series_uids:
+    sop_payload = portal.list_tcia_sop_instance_uids(
+        TciaSeriesQuery(series_instance_uid=series_uid, format_="JSON")
+    )
+    portal.download_tcia_series(series_instance_uid=series_uid, output_dir="./TCIA-DATASET")
 ```
 
 ## 📊 Example Outputs (with statistics=True, visualizations=True)
