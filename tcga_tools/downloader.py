@@ -14,12 +14,13 @@ import pandas as pd
 from tqdm import tqdm
 
 from .api import GDCClient
+from .adapters.gdc_api_wrapper import GdcApiWrapperDownloader
 from .filters import Filters as F
 from .config import (
     DEFAULT_FILE_FIELDS,
     FILETYPE_PREFERENCES,
 )
-from .utils import ensure_dir, read_env_token, to_csv, flatten_hits, save_json, write_text_log, ensure_case_sample_columns
+from .utils import ensure_dir, read_env_token, to_csv, flatten_hits, save_json, write_text_log
 from .annotations import build_clinical_csv, build_molecular_index, build_reports_index, build_diagnosis_csv
 from .grouping import build_patient_groups
 from .analytics import generate_statistics_and_visualizations
@@ -115,7 +116,7 @@ def _collect_wsi_metadata(file_paths: List[Path]) -> pd.DataFrame:
 
 
 def _robust_download_single(
-    client: GDCClient,
+    downloader: GdcApiWrapperDownloader,
     fid: str,
     target_path: Path,
     *,
@@ -157,16 +158,17 @@ def _robust_download_single(
 
     for attempt in range(1, max_retries + 1):
         try:
-            client.download_single(fid, target_path=str(tmp), related_files=related_files)
+            result = downloader.download_single(fid, path=str(target_path.parent), name=tmp.name)
+            tmp_path = Path(result.path)
 
             # Verify size if available
             if expected_size is not None:
-                got = tmp.stat().st_size
+                got = tmp_path.stat().st_size
                 if got != expected_size:
                     raise IOError(f"Downloaded size {got} != expected {expected_size}")
 
             # Atomic replace
-            os.replace(tmp, target_path)
+            os.replace(tmp_path, target_path)
             return True
 
         except (ChunkedEncodingError, ProtocolError, IncompleteRead, ConnectionError, ReadTimeout) as e:
@@ -210,6 +212,7 @@ def _run_single_dataset(
     visualizations: bool,
     log_transforms: bool,
     client: GDCClient,
+    downloader: GdcApiWrapperDownloader,
     datatype: str | list[str] | None = None
 ) -> Dict[str, Optional[Path]]:
 
@@ -263,6 +266,9 @@ def _run_single_dataset(
     out_data_dir = ensure_dir(output_dir / "data")
     paths_downloaded: List[Path] = []
     manifest_path: Optional[Path] = None
+    if manifest_also:
+        manifest_path = Path(output_dir) / "gdc_manifest.tsv"
+        client.download_manifest_for_query(filters, manifest_path=str(manifest_path))
 
     if not raw and not files_df.empty:
         id_to_name = dict(zip(files_df.get("id", []), files_df.get("file_name", [])))
@@ -270,10 +276,13 @@ def _run_single_dataset(
 
         uuids = list(id_to_name.keys())
         if tar_archives and uuids:
-            tar_path = output_dir / f"{dataset_name}_files.tar.gz"
-            # Optional: you can skip if tar already exists.
+            tar_name = f"{dataset_name}_files.tar.gz"
+            tar_path = output_dir / tar_name
             if not tar_path.exists():
-                client.download_tar(uuids, target_path=str(tar_path), uncompressed=False)
+                result = downloader.download_multiple(uuids, path=str(output_dir))
+                downloaded_path = Path(result.path)
+                if downloaded_path != tar_path and downloaded_path.exists():
+                    downloaded_path.rename(tar_path)
             else:
                 log.info(f"[skip] tar exists: {tar_path}")
             paths_downloaded.append(tar_path)
@@ -282,7 +291,7 @@ def _run_single_dataset(
             for fid, fname in tqdm(id_to_name.items(), desc=f"Downloading {dataset_name}"):
                 target = out_data_dir / fname
                 ok = _robust_download_single(
-                    client,
+                    downloader,
                     fid,
                     target,
                     related_files=related_files,
@@ -409,6 +418,7 @@ def download(
     out_root = ensure_dir(output_dir)
     token = read_env_token()
     client = GDCClient(token=token)
+    downloader = GdcApiWrapperDownloader()
 
 
     if filetypes is None and (datatype and str(datatype).lower() == "wsi"):
@@ -438,6 +448,7 @@ def download(
             visualizations=visualizations,
             log_transforms=log_transforms,
             client=client,
+            downloader=downloader,
             datatype=datatype
         )
         # Collect for aggregation
