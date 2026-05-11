@@ -4,6 +4,14 @@ import os
 GDC_BASE_URL: str = os.environ.get("GDC_BASE_URL", "https://api.gdc.cancer.gov")
 # Where to look for the auth token by default
 GDC_TOKEN_ENV: str = os.environ.get("GDC_TOKEN_ENV", "GDC_TOKEN")
+TCIA_BASE_URL: str = os.environ.get(
+    "TCIA_BASE_URL", "https://services.cancerimagingarchive.net/nbia-api/services/v1"
+)
+HF_BASE_URL: str = os.environ.get("HF_BASE_URL", "https://huggingface.co")
+HF_TOKEN_ENV: str = os.environ.get("HF_TOKEN_ENV", "HF_TOKEN")
+PATHO_BENCH_REPO_ID: str = os.environ.get(
+    "PATHO_BENCH_REPO_ID", "MahmoodLab/Patho-Bench"
+)
 
 # Default fields we pull for files; include nested case + sample info for easy CSVs
 DEFAULT_FILE_FIELDS = [
@@ -89,7 +97,7 @@ MOLECULAR_CATEGORIES = [
     "Transcriptome Profiling",
     "Copy Number Variation",
     "DNA Methylation",
-    "Somatic Structural Variation", 
+    "Somatic Structural Variation",
     "Proteome Profiling",
     "Sequencing Reads",
 ]
@@ -121,3 +129,39 @@ SAMPLE_TYPE_TO_GROUP = {
     "Solid Tissue Normal": "normal",
     "Blood Derived Normal": "normal",
 }
+
+TCIA_SERIES_FIELDS = [
+    "SeriesInstanceUID",
+    "StudyInstanceUID",
+    "Modality",
+    "ProtocolName",
+    "SeriesDate",
+    "SeriesDescription",
+    "BodyPartExamined",
+    "SeriesNumber",
+    "Collection",
+    "PatientID",
+    "Manufacturer",
+    "ManufacturerModelName",
+    "SoftwareVersions",
+    "ImageCount",
+    "TimeStamp",
+    "LicenseName",
+    "LicenseURI",
+    "CollectionURI",
+    "FileSize",
+    "DateReleased",
+    "StudyDate",
+]
+
+TCIA_PATIENT_STUDY_FIELDS = [
+    "StudyInstanceUID",
+    "StudyDate",
+    "StudyDescription",
+    "PatientAge",
+    "PatientID",
+    "PatientName",
+    "PatientSex",
+    "Collection",
+    "SeriesCount",
+]

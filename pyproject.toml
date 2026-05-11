@@ -26,6 +26,9 @@ dependencies = [
 "Homepage" = "https://github.com/LUMCPathAI/TCGA-Tools"
 "Bug Tracker" = "https://github.com/LUMCPathAI/TCGA-Tools/issues"
 
+[project.scripts]
+tcga-tools = "tcga_tools.cli:main"
+
 [tool.setuptools]
 packages = ["tcga_tools", "tcga_tools.adapters", "tcga_tools.services"]
 
