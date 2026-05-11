@@ -2,7 +2,7 @@
 """
 Compares online raw retrieval of TCGA-LUSC with fixed dataset statistics.
 """
-import os
+
 from pathlib import Path
 
 import pandas as pd
@@ -16,8 +16,8 @@ pytestmark = pytest.mark.online  # run with: pytest -m online -v
 PROJECT_ID = "TCGA-LUSC"
 EXPECTED_PROJECT_CASES = 504
 EXPECTED_PROJECT_FILES = 32329
-EXPECTED_SVS_CASES = 478          # Diagnostic Slide → Cases
-EXPECTED_SVS_FILES = 512          # Diagnostic Slide → Files
+EXPECTED_SVS_CASES = 478  # Diagnostic Slide → Cases
+EXPECTED_SVS_FILES = 512  # Diagnostic Slide → Files
 
 
 def _skip_if_offline():
@@ -40,8 +40,12 @@ def test_project_counts_lusc():
     cases = int(row["summary.case_count"].iloc[0])
     files = int(row["summary.file_count"].iloc[0])
 
-    assert cases == EXPECTED_PROJECT_CASES, f"Expected {EXPECTED_PROJECT_CASES} cases, got {cases}"
-    assert files == EXPECTED_PROJECT_FILES, f"Expected {EXPECTED_PROJECT_FILES} files, got {files}"
+    assert cases == EXPECTED_PROJECT_CASES, (
+        f"Expected {EXPECTED_PROJECT_CASES} cases, got {cases}"
+    )
+    assert files == EXPECTED_PROJECT_FILES, (
+        f"Expected {EXPECTED_PROJECT_FILES} files, got {files}"
+    )
     print("Successfully verified project case and file counts.")
 
 
@@ -74,22 +78,28 @@ def test_lusc_svs_counts_and_annotations(tmp_path: Path):
         files_df = files_df[files_df["cases.project.project_id"] == PROJECT_ID]
 
     # Sanity: patient column exists for easy grouping
-    assert "patient" in files_df.columns, "'patient' column missing in files_metadata.csv"
+    assert "patient" in files_df.columns, (
+        "'patient' column missing in files_metadata.csv"
+    )
     print("Successfully verified 'patient' column presence.")
 
     n_files = len(files_df)
     n_cases = files_df["patient"].nunique()
     print("Found {} files of {} cases".format(n_files, n_cases))
 
-    #Check for duplicates
+    # Check for duplicates
     assert n_files == files_df["id"].nunique(), "Duplicate file IDs found"
     print("Successfully verified file IDs.")
 
-    assert n_files == EXPECTED_SVS_FILES, f"Expected {EXPECTED_SVS_FILES} .svs files, got {n_files}"
+    assert n_files == EXPECTED_SVS_FILES, (
+        f"Expected {EXPECTED_SVS_FILES} .svs files, got {n_files}"
+    )
     print("Successfully verified .svs file count.")
-    assert n_cases == EXPECTED_SVS_CASES, f"Expected {EXPECTED_SVS_CASES} .svs cases, got {n_cases}"
+    assert n_cases == EXPECTED_SVS_CASES, (
+        f"Expected {EXPECTED_SVS_CASES} .svs cases, got {n_cases}"
+    )
     print("Successfully verified .svs case count.")
-    
+
     # ---- Verify grouping output exists and has expected columns ----
     groups_csv = artifacts.get("groups_csv")
     assert groups_csv is not None and Path(groups_csv).exists(), "groups.csv missing"
@@ -106,9 +116,13 @@ def test_lusc_svs_counts_and_annotations(tmp_path: Path):
     molecular_csv = artifacts.get("molecular_csv")
     report_csv = artifacts.get("report_csv")
 
-    assert clinical_csv is not None and Path(clinical_csv).exists(), "clinical.csv missing"
+    assert clinical_csv is not None and Path(clinical_csv).exists(), (
+        "clinical.csv missing"
+    )
     print("Successfully verified clinical.csv creation.")
-    assert diagnosis_csv is not None and Path(diagnosis_csv).exists(), "diagnosis.csv missing"
+    assert diagnosis_csv is not None and Path(diagnosis_csv).exists(), (
+        "diagnosis.csv missing"
+    )
     print("Successfully verified diagnosis.csv creation.")
 
     # Clinical + Diagnosis should have at least one row for LUSC
@@ -124,13 +138,15 @@ def test_lusc_svs_counts_and_annotations(tmp_path: Path):
         mol_df = pd.read_csv(molecular_csv)
         print(mol_df)
         print(mol_df.columns)
-        assert "cases.case_id" in mol_df.columns or "cases.submitter_id" in mol_df.columns, \
-            "molecular_index.csv missing case linkage columns"
+        assert (
+            "cases.case_id" in mol_df.columns or "cases.submitter_id" in mol_df.columns
+        ), "molecular_index.csv missing case linkage columns"
         print("Successfully verified molecular_index.csv case linkage columns.")
     if report_csv is not None and Path(report_csv).exists():
         rep_df = pd.read_csv(report_csv)
-        assert "cases.case_id" in rep_df.columns or "cases.submitter_id" in rep_df.columns, \
-            "reports_index.csv missing case linkage columns"
+        assert (
+            "cases.case_id" in rep_df.columns or "cases.submitter_id" in rep_df.columns
+        ), "reports_index.csv missing case linkage columns"
         print("Successfully verified reports_index.csv case linkage columns.")
 
     # ---- Stats file should exist when statistics=True ----

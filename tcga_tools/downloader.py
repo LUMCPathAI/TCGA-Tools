@@ -1,4 +1,5 @@
 from __future__ import annotations
+import concurrent.futures
 import datetime as _dt
 import logging
 import os
@@ -19,10 +20,25 @@ from .config import (
     DEFAULT_FILE_FIELDS,
     FILETYPE_PREFERENCES,
 )
-from .utils import ensure_dir, read_env_token, to_csv, flatten_hits, save_json, write_text_log, ensure_case_sample_columns
-from .annotations import build_clinical_csv, build_molecular_index, build_reports_index, build_diagnosis_csv
+from .utils import (
+    ensure_dir,
+    read_env_token,
+    to_csv,
+    flatten_hits,
+    save_json,
+    write_text_log,
+    ensure_case_sample_columns,
+)
+from .annotations import (
+    build_clinical_csv,
+    build_molecular_index,
+    build_reports_index,
+    build_diagnosis_csv,
+)
 from .grouping import build_patient_groups
 from .analytics import generate_statistics_and_visualizations
+from .patho_bench import download_patho_bench
+from .tcia import download_tcia
 
 log = logging.getLogger("tcga_tools")
 
@@ -42,6 +58,26 @@ DATATYPE_FILTERS = {
     },
 }
 
+
+def _normalize_string_list(values: str | Iterable[str] | None) -> list[str] | None:
+    """Normalize optional CLI/API string inputs.
+
+    Empty strings and the literal ``"none"`` are treated as absent values.
+    """
+    if values is None:
+        return None
+    if isinstance(values, str):
+        candidates = [values]
+    else:
+        candidates = list(values)
+    normalized = [
+        value.strip()
+        for value in candidates
+        if value is not None and value.strip() and value.strip().lower() != "none"
+    ]
+    return normalized or None
+
+
 def _filetype_filters(exts: Iterable[str]) -> List[Dict]:
     """Build a filter disjunction for any of the provided filetype extensions.
     Preference order: data_format/data_type; otherwise fall back to filename suffix match via OR of equality on 'file_name' end.
@@ -57,6 +93,63 @@ def _filetype_filters(exts: Iterable[str]) -> List[Dict]:
         else:
             clauses.append(F.IN("file_name", [f"*{ext}"]))
     return clauses
+
+
+def _normalize_worker_count(download_workers: int | None) -> int:
+    """Return a bounded worker count for parallel downloads."""
+    if download_workers is None:
+        return 4
+    assert download_workers >= 1, "download_workers must be >= 1"
+    return int(download_workers)
+
+
+def _download_files_parallel(
+    *,
+    client: GDCClient,
+    id_to_name: dict[str, str],
+    id_to_size: dict[str, int],
+    out_data_dir: Path,
+    dataset_name: str,
+    related_files: bool,
+    download_workers: int,
+) -> tuple[list[Path], list[str]]:
+    """Download independent GDC files with bounded parallelism."""
+    paths_downloaded: list[Path] = []
+    failed: list[str] = []
+
+    def _download_one(item: tuple[str, str]) -> tuple[bool, Path]:
+        fid, fname = item
+        target = out_data_dir / fname
+        ok = _robust_download_single(
+            client,
+            fid,
+            target,
+            related_files=related_files,
+            expected_size=id_to_size.get(fid),
+            max_retries=5,
+            base_sleep=2.0,
+            skip_existing=True,
+        )
+        return ok, target
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=download_workers
+    ) as executor:
+        futures = {
+            executor.submit(_download_one, item): item[1] for item in id_to_name.items()
+        }
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc=f"Downloading {dataset_name}",
+        ):
+            fname = futures[future]
+            ok, target = future.result()
+            if ok:
+                paths_downloaded.append(target)
+            else:
+                failed.append(fname)
+    return paths_downloaded, failed
 
 
 def _files_query_filters(project_id: str, filetypes: Iterable[str]) -> Dict:
@@ -96,18 +189,28 @@ def _collect_wsi_metadata(file_paths: List[Path]) -> pd.DataFrame:
             slide = openslide.OpenSlide(str(p))
             props = slide.properties
             vendor = props.get("openslide.vendor") or props.get("aperio.Manufacturer")
-            model = props.get("aperio.Model") or props.get("hamamatsu.DeviceModel") or props.get("openslide.vendor")
+            model = (
+                props.get("aperio.Model")
+                or props.get("hamamatsu.DeviceModel")
+                or props.get("openslide.vendor")
+            )
             mpp_x = props.get("openslide.mpp-x") or props.get("aperio.MPP")
             mpp_y = props.get("openslide.mpp-y") or props.get("aperio.MPP")
-            obj = props.get("openslide.objective-power") or props.get("aperio.AppMag") or props.get("hamamatsu.SourceLens")
-            rows.append({
-                "file_name": p.name,
-                "wsi.vendor": vendor,
-                "wsi.model": model,
-                "wsi.mpp_x": float(mpp_x) if mpp_x is not None else None,
-                "wsi.mpp_y": float(mpp_y) if mpp_y is not None else None,
-                "wsi.objective_power": float(obj) if obj is not None else None,
-            })
+            obj = (
+                props.get("openslide.objective-power")
+                or props.get("aperio.AppMag")
+                or props.get("hamamatsu.SourceLens")
+            )
+            rows.append(
+                {
+                    "file_name": p.name,
+                    "wsi.vendor": vendor,
+                    "wsi.model": model,
+                    "wsi.mpp_x": float(mpp_x) if mpp_x is not None else None,
+                    "wsi.mpp_y": float(mpp_y) if mpp_y is not None else None,
+                    "wsi.objective_power": float(obj) if obj is not None else None,
+                }
+            )
             slide.close()
         except Exception:
             continue
@@ -137,7 +240,9 @@ def _robust_download_single(
         else:
             try:
                 if target_path.stat().st_size == expected_size:
-                    log.info(f"[skip] {target_path.name} already complete ({expected_size} bytes)")
+                    log.info(
+                        f"[skip] {target_path.name} already complete ({expected_size} bytes)"
+                    )
                     return True
                 else:
                     log.warning(
@@ -157,7 +262,9 @@ def _robust_download_single(
 
     for attempt in range(1, max_retries + 1):
         try:
-            client.download_single(fid, target_path=str(tmp), related_files=related_files)
+            client.download_single(
+                fid, target_path=str(tmp), related_files=related_files
+            )
 
             # Verify size if available
             if expected_size is not None:
@@ -169,7 +276,13 @@ def _robust_download_single(
             os.replace(tmp, target_path)
             return True
 
-        except (ChunkedEncodingError, ProtocolError, IncompleteRead, ConnectionError, ReadTimeout) as e:
+        except (
+            ChunkedEncodingError,
+            ProtocolError,
+            IncompleteRead,
+            ConnectionError,
+            ReadTimeout,
+        ) as e:
             # Network/stream hiccup: backoff and retry
             if tmp.exists():
                 try:
@@ -180,7 +293,9 @@ def _robust_download_single(
                 log.error(f"[fail] {target_path.name} after {attempt} attempts: {e}")
                 return False
             sleep_s = base_sleep * (2 ** (attempt - 1)) * (1.0 + random.random() * 0.25)
-            log.warning(f"[retry {attempt}/{max_retries}] {target_path.name}: {e} — sleeping {sleep_s:.1f}s")
+            log.warning(
+                f"[retry {attempt}/{max_retries}] {target_path.name}: {e} — sleeping {sleep_s:.1f}s"
+            )
             time.sleep(sleep_s)
 
         except Exception as e:
@@ -194,6 +309,7 @@ def _robust_download_single(
             return False
 
     return False  # Shouldn't reach here
+
 
 def _run_single_dataset(
     *,
@@ -210,8 +326,10 @@ def _run_single_dataset(
     visualizations: bool,
     log_transforms: bool,
     client: GDCClient,
-    datatype: str | list[str] | None = None
+    datatype: str | list[str] | None = None,
+    download_workers: int = 4,
 ) -> Dict[str, Optional[Path]]:
+    assert dataset_name, "dataset_name must be a non-empty TCGA project identifier"
 
     # --- datatype handling ---
     if datatype:
@@ -225,10 +343,12 @@ def _run_single_dataset(
                 raise ValueError(f"Unsupported datatype: {dt}")
             if spec["filetypes"]:
                 all_filetypes.extend(spec["filetypes"])
-            dtype_filters.append(F.AND(
-                F.EQ("cases.project.project_id", dataset_name),
-                *spec["extra"],
-            ))
+            dtype_filters.append(
+                F.AND(
+                    F.EQ("cases.project.project_id", dataset_name),
+                    *spec["extra"],
+                )
+            )
 
         # combine across datatypes with OR
         filters = F.OR(*dtype_filters)
@@ -239,25 +359,24 @@ def _run_single_dataset(
         # still append filetype filters if present
         if filetypes:
             ft_filters = _filetype_filters(filetypes)
-            filters = F.AND(filters, ft_filters[0] if len(ft_filters) == 1 else F.OR(*ft_filters))
+            filters = F.AND(
+                filters, ft_filters[0] if len(ft_filters) == 1 else F.OR(*ft_filters)
+            )
 
     else:
         filters = _files_query_filters(dataset_name, filetypes)
-        
-    # Print the list of filters used
-    print("FILTERS:")
-    print(filters)
 
     # 1) Enumerate files + metadata
     hits = client.paged_query("files", filters, fields)
     files_df = flatten_hits(hits)
-    files_df = _ensure_case_sample_columns(files_df) 
+    files_df = ensure_case_sample_columns(files_df)
+    files_df = _patient_column(files_df)
     files_csv = to_csv(files_df, output_dir / "files_metadata.csv")
     # 2) Write groups.csv
     groups_df = build_patient_groups(files_df)
-    print("GROUPS:")
-    print(groups_df)
-    groups_csv = to_csv(groups_df, output_dir / "groups.csv") if not groups_df.empty else None
+    groups_csv = (
+        to_csv(groups_df, output_dir / "groups.csv") if not groups_df.empty else None
+    )
 
     # 3) Download data (unless raw)
     out_data_dir = ensure_dir(output_dir / "data")
@@ -266,37 +385,37 @@ def _run_single_dataset(
 
     if not raw and not files_df.empty:
         id_to_name = dict(zip(files_df.get("id", []), files_df.get("file_name", [])))
-        id_to_size = dict(zip(files_df.get("id", []), files_df.get("file_size", []))) if "file_size" in files_df.columns else {}
+        id_to_size = (
+            dict(zip(files_df.get("id", []), files_df.get("file_size", [])))
+            if "file_size" in files_df.columns
+            else {}
+        )
 
         uuids = list(id_to_name.keys())
         if tar_archives and uuids:
             tar_path = output_dir / f"{dataset_name}_files.tar.gz"
             # Optional: you can skip if tar already exists.
             if not tar_path.exists():
-                client.download_tar(uuids, target_path=str(tar_path), uncompressed=False)
+                client.download_tar(
+                    uuids, target_path=str(tar_path), uncompressed=False
+                )
             else:
                 log.info(f"[skip] tar exists: {tar_path}")
             paths_downloaded.append(tar_path)
         else:
-            failed: List[str] = []
-            for fid, fname in tqdm(id_to_name.items(), desc=f"Downloading {dataset_name}"):
-                target = out_data_dir / fname
-                ok = _robust_download_single(
-                    client,
-                    fid,
-                    target,
-                    related_files=related_files,
-                    expected_size=id_to_size.get(fid),  # may be None
-                    max_retries=5,
-                    base_sleep=2.0,
-                    skip_existing=True,
-                )
-                if ok:
-                    paths_downloaded.append(target)
-                else:
-                    failed.append(fname)
+            paths_downloaded, failed = _download_files_parallel(
+                client=client,
+                id_to_name=id_to_name,
+                id_to_size=id_to_size,
+                out_data_dir=out_data_dir,
+                dataset_name=dataset_name,
+                related_files=related_files,
+                download_workers=download_workers,
+            )
             if failed:
-                log.warning(f"{len(failed)} file(s) failed to download after retries: {failed[:5]}{'...' if len(failed)>5 else ''}")
+                log.warning(
+                    f"{len(failed)} file(s) failed to download after retries: {failed[:5]}{'...' if len(failed) > 5 else ''}"
+                )
 
     # 3b) Optional WSI metadata enrichment
     wsi_meta_csv: Optional[Path] = None
@@ -318,7 +437,11 @@ def _run_single_dataset(
         "diagnosis_csv": None,
         "wsi_meta_csv": wsi_meta_csv,
     }
-    case_ids = set(files_df.get("cases.case_id", []).dropna().tolist()) if "cases.case_id" in files_df.columns else set()
+    case_ids = (
+        set(files_df.get("cases.case_id", []).dropna().tolist())
+        if "cases.case_id" in files_df.columns
+        else set()
+    )
 
     if annotations:
         annos = {a.lower() for a in annotations}
@@ -327,16 +450,24 @@ def _run_single_dataset(
         if case_ids:
             if "clinical" in annos:
                 clinical_df = build_clinical_csv(client, case_ids)
-                annos_csvs["clinical_csv"] = to_csv(clinical_df, output_dir / "clinical.csv")
+                annos_csvs["clinical_csv"] = to_csv(
+                    clinical_df, output_dir / "clinical.csv"
+                )
             if "molecular" in annos:
                 mol_df = build_molecular_index(client, dataset_name, case_ids)
-                annos_csvs["molecular_csv"] = to_csv(mol_df, output_dir / "molecular_index.csv")
+                annos_csvs["molecular_csv"] = to_csv(
+                    mol_df, output_dir / "molecular_index.csv"
+                )
             if "report" in annos:
                 rep_df = build_reports_index(client, dataset_name, case_ids)
-                annos_csvs["report_csv"] = to_csv(rep_df, output_dir / "reports_index.csv")
+                annos_csvs["report_csv"] = to_csv(
+                    rep_df, output_dir / "reports_index.csv"
+                )
             if "diagnosis" in annos:
                 diag_df = build_diagnosis_csv(client, case_ids)
-                annos_csvs["diagnosis_csv"] = to_csv(diag_df, output_dir / "diagnosis.csv")
+                annos_csvs["diagnosis_csv"] = to_csv(
+                    diag_df, output_dir / "diagnosis.csv"
+                )
 
     # 5) Stats + Visualizations
     stats_json: Optional[Path] = None
@@ -361,10 +492,12 @@ def _run_single_dataset(
     if raw:
         preview = {
             "dataset_name": dataset_name,
-            "filetypes": list(filetypes or []),   # <= guard here
+            "filetypes": list(filetypes or []),  # <= guard here
             "files_found": int(len(files_df)),
             "example_files": files_df.head(10).to_dict(orient="records"),
-            "grouping_summary": groups_df["group"].value_counts(dropna=False).to_dict() if not groups_df.empty else {},
+            "grouping_summary": groups_df["group"].value_counts(dropna=False).to_dict()
+            if not groups_df.empty
+            else {},
             "case_ids": sorted(list(case_ids))[:20],
         }
         preview_json = save_json(preview, output_dir / "preview.json")
@@ -394,7 +527,16 @@ def download(
     statistics: bool = False,
     visualizations: bool = False,
     log_transforms: bool = True,
-    datatype: str | None = None
+    datatype: str | Iterable[str] | None = None,
+    source: str = "gdc",
+    patient_id: str | None = None,
+    study_instance_uid: str | None = None,
+    series_instance_uid: str | None = None,
+    body_part: str | None = None,
+    manufacturer: str | None = None,
+    download_workers: int | None = None,
+    task_name: str | None = None,
+    download_raw_data: bool = False,
 ) -> Dict[str, Optional[Path]]:
     """High-level convenience wrapper used as ``tcga_tools.Download``.
 
@@ -406,16 +548,58 @@ def download(
         For a single dataset: artifact paths for that dataset.
         For a list: returns a JSON index at ``<out>/multi_index.json`` and per-dataset subfolders.
     """
+    normalized_source = source.lower()
+    if normalized_source == "tcia":
+        return download_tcia(
+            dataset_name=dataset_name,
+            output_dir=output_dir,
+            datatype=datatype,
+            annotations=annotations,
+            raw=raw,
+            log_transforms=log_transforms,
+            patient_id=patient_id,
+            study_instance_uid=study_instance_uid,
+            series_instance_uid=series_instance_uid,
+            body_part=body_part,
+            manufacturer=manufacturer,
+            download_workers=download_workers,
+        )
+    if normalized_source == "patho-bench":
+        return download_patho_bench(
+            dataset_name=dataset_name,
+            output_dir=output_dir,
+            task_name=task_name,
+            download_raw_data=download_raw_data,
+            download_workers=download_workers,
+            datatype=datatype,
+            patient_id=patient_id,
+            study_instance_uid=study_instance_uid,
+            series_instance_uid=series_instance_uid,
+            body_part=body_part,
+            manufacturer=manufacturer,
+            log_transforms=log_transforms,
+        )
+    if normalized_source != "gdc":
+        raise ValueError(f"Unsupported source: {source}")
+
     out_root = ensure_dir(output_dir)
     token = read_env_token()
     client = GDCClient(token=token)
+    normalized_download_workers = _normalize_worker_count(download_workers)
 
+    normalized_filetypes = _normalize_string_list(filetypes)
+    normalized_annotations = _normalize_string_list(annotations)
+    normalized_datatypes = _normalize_string_list(datatype)
 
-    if filetypes is None and (datatype and str(datatype).lower() == "wsi"):
-        filetypes = [".svs"]
-    
+    if normalized_filetypes is None and normalized_datatypes == ["wsi"]:
+        normalized_filetypes = [".svs"]
+
     # Normalize dataset list
-    datasets: List[str] = list(dataset_name) if isinstance(dataset_name, (list, tuple, set)) else [str(dataset_name)]
+    datasets: List[str] = (
+        list(dataset_name)
+        if isinstance(dataset_name, (list, tuple, set))
+        else [str(dataset_name)]
+    )
 
     # For multiple datasets, iterate with a progress bar
     multi_index: Dict[str, Dict[str, str]] = {}
@@ -426,8 +610,8 @@ def download(
         ds_out = ensure_dir(Path(out_root) / ds)
         art = _run_single_dataset(
             dataset_name=ds,
-            filetypes=filetypes,
-            annotations=annotations,
+            filetypes=normalized_filetypes or [],
+            annotations=normalized_annotations,
             output_dir=ds_out,
             tar_archives=tar_archives,
             related_files=related_files,
@@ -438,7 +622,8 @@ def download(
             visualizations=visualizations,
             log_transforms=log_transforms,
             client=client,
-            datatype=datatype
+            datatype=normalized_datatypes,
+            download_workers=normalized_download_workers,
         )
         # Collect for aggregation
         multi_index[ds] = {k: str(v) for k, v in art.items() if v is not None}
@@ -465,77 +650,37 @@ def download(
         run_log = {
             "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
             "datasets": datasets,
-            "filetypes": list(filetypes or []),
-            "annotations": list(annotations or []),
+            "filetypes": list(normalized_filetypes or []),
+            "annotations": list(normalized_annotations or []),
+            "datatype": list(normalized_datatypes or []),
             "raw": raw,
             "statistics": statistics,
             "visualizations": visualizations,
             "tar_archives": tar_archives,
             "related_files": related_files,
+            "download_workers": normalized_download_workers,
             "fields_requested": list(fields),
             "queries": getattr(client, "last_queries", []),
         }
         save_json(run_log, Path(out_root) / "run_log.json")
-        write_text_log([
-            f"Datasets: {', '.join(datasets)}",
-            f"Filetypes: {', '.join(filetypes or [])}",
-            f"Annotations: {', '.join(annotations or [])}",
-            f"Raw={raw}, Stats={statistics}, Viz={visualizations}",
-        ], Path(out_root) / "run_log.txt")
+        write_text_log(
+            [
+                f"Datasets: {', '.join(datasets)}",
+                f"Filetypes: {', '.join(normalized_filetypes or [])}",
+                f"Annotations: {', '.join(normalized_annotations or [])}",
+                f"Datatype: {', '.join(normalized_datatypes or [])}",
+                f"DownloadWorkers: {normalized_download_workers}",
+                f"Raw={raw}, Stats={statistics}, Viz={visualizations}",
+            ],
+            Path(out_root) / "run_log.txt",
+        )
 
     # If single dataset, return that artifact mapping; otherwise return index json path
     if len(datasets) == 1:
-        return {k: (Path(v) if isinstance(v, str) else v) for k, v in multi_index[datasets[0]].items()}
+        return {
+            k: (Path(v) if isinstance(v, str) else v)
+            for k, v in multi_index[datasets[0]].items()
+        }
     else:
         index_path = save_json(multi_index, Path(out_root) / "multi_index.json")
         return {"multi_index_json": index_path}
-
-from typing import Any
-
-def _ensure_case_sample_columns(files_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    GDC /files returns nested arrays: cases[] and cases[].samples[].
-    This function derives flat, analysis-ready columns:
-      - cases.case_id
-      - cases.submitter_id
-      - cases.project.project_id
-      - cases.samples.sample_type
-    If multiple items exist, we take the *first* present (typical for TCGA SVS).
-    """
-    if "cases" in files_df.columns:
-        def first_case(v: Any) -> dict:
-            if isinstance(v, list) and v:
-                return v[0] or {}
-            return {}
-
-        case_series = files_df["cases"].map(first_case)
-
-        def get_case_project_id(c: dict) -> Optional[str]:
-            pr = c.get("project") or {}
-            return pr.get("project_id")
-
-        def first_sample_type(c: dict) -> Optional[str]:
-            samples = c.get("samples") or []
-            for s in samples:
-                st = s.get("sample_type")
-                if st:
-                    return st
-            return None
-
-        files_df["cases.case_id"] = case_series.map(lambda c: c.get("case_id"))
-        files_df["cases.submitter_id"] = case_series.map(lambda c: c.get("submitter_id"))
-        files_df["cases.project.project_id"] = case_series.map(get_case_project_id)
-        files_df["cases.samples.sample_type"] = case_series.map(first_sample_type)
-
-        # Optional: drop the raw nested column to avoid confusion
-        # files_df = files_df.drop(columns=["cases"])
-
-    # Ensure a convenient 'patient' column
-    if "cases.submitter_id" in files_df.columns and files_df["cases.submitter_id"].notna().any():
-        files_df["patient"] = files_df["cases.submitter_id"]
-    elif "cases.case_id" in files_df.columns:
-        files_df["patient"] = files_df["cases.case_id"]
-    else:
-        files_df["patient"] = pd.NA
-
-    return files_df

@@ -1,4 +1,4 @@
-"""TCGA-Tools — light-weight Python client for NCI GDC/TCGA
+"""TCGA-Tools — light-weight Python client for NCI GDC/TCGA.
 
 Usage
 -----
@@ -19,7 +19,19 @@ Environment
 - Dependencies: requests, pandas, tqdm.
 """
 
-from .downloader import download as Download  # public API function
-from .datasets import list_datasets as ListDatasets
+from .datasets import (
+    list_data_types,
+    list_datasets,
+    list_datasets as ListDatasets,
+)
+from .downloader import download, download as Download
+from .validation import validate_output_dir
 
-__all__ = ["Download", "ListDatasets"]
+__all__ = [
+    "Download",
+    "ListDatasets",
+    "download",
+    "list_data_types",
+    "list_datasets",
+    "validate_output_dir",
+]
