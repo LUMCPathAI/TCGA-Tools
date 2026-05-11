@@ -7,16 +7,20 @@ Usage
 ...             annotations=["clinical", "molecular", "report"],
 ...             output_dir="./TCGA-LUSC")
 
-This package wraps the public GDC REST API and produces:
+New architecture
+----------------
+>>> from tcga_tools.pathology import PathologyDataPortal
+>>> portal = PathologyDataPortal()
+>>> sop_list = portal.list_tcia_sop_instance_uids(
+...     tt.TciaSeriesQuery(series_instance_uid="uid.series.instance")
+... )
+>>> portal.download_tcia_series(series_instance_uid="uid.series.instance", output_dir="./TCIA")
+
+This package wraps the public GDC REST API and TCIA endpoints to produce:
 - Downloaded data files matching a project + file type
 - A files_metadata.csv describing every downloaded file
 - Optional annotations CSVs (clinical/molecular/report)
 - A groups.csv that groups patients/cases and samples
-
-Environment
------------
-- Optional auth token for controlled-access files via env var ``GDC_TOKEN``.
-- Dependencies: requests, pandas, tqdm.
 """
 
 from .datasets import (
@@ -26,6 +30,8 @@ from .datasets import (
 )
 from .downloader import download, download as Download
 from .validation import validate_output_dir
+from .pathology import PathologyDataPortal
+from .services.tcia_pathology import TciaSeriesQuery
 
 __all__ = [
     "Download",
@@ -34,4 +40,6 @@ __all__ = [
     "list_data_types",
     "list_datasets",
     "validate_output_dir",
+    "PathologyDataPortal",
+    "TciaSeriesQuery",
 ]

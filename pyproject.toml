@@ -18,7 +18,8 @@ dependencies = [
   "tqdm>=4.65",
   "pandas>=1.5",
   "numpy>=1.23",
-  "matplotlib>=3.7"
+  "matplotlib>=3.7",
+  "gdc-api-wrapper>=0.2.0"
 ]
 
 [project.urls]
@@ -29,7 +30,7 @@ dependencies = [
 tcga-tools = "tcga_tools.cli:main"
 
 [tool.setuptools]
-packages = ["tcga_tools"]
+packages = ["tcga_tools", "tcga_tools.adapters", "tcga_tools.services"]
 
 [tool.setuptools.package-data]
 "tcga_tools" = ["py.typed"]

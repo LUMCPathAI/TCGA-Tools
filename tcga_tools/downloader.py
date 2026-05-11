@@ -15,6 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .api import GDCClient
+from .adapters.gdc_api_wrapper import GdcApiWrapperDownloader
 from .filters import Filters as F
 from .config import (
     DEFAULT_FILE_FIELDS,
@@ -218,7 +219,7 @@ def _collect_wsi_metadata(file_paths: List[Path]) -> pd.DataFrame:
 
 
 def _robust_download_single(
-    client: GDCClient,
+    downloader: GdcApiWrapperDownloader,
     fid: str,
     target_path: Path,
     *,
@@ -265,15 +266,16 @@ def _robust_download_single(
             client.download_single(
                 fid, target_path=str(tmp), related_files=related_files
             )
+            tmp_path = tmp
 
             # Verify size if available
             if expected_size is not None:
-                got = tmp.stat().st_size
+                got = tmp_path.stat().st_size
                 if got != expected_size:
                     raise IOError(f"Downloaded size {got} != expected {expected_size}")
 
             # Atomic replace
-            os.replace(tmp, target_path)
+            os.replace(tmp_path, target_path)
             return True
 
         except (
@@ -382,6 +384,9 @@ def _run_single_dataset(
     out_data_dir = ensure_dir(output_dir / "data")
     paths_downloaded: List[Path] = []
     manifest_path: Optional[Path] = None
+    if manifest_also:
+        manifest_path = Path(output_dir) / "gdc_manifest.tsv"
+        client.download_manifest_for_query(filters, manifest_path=str(manifest_path))
 
     if not raw and not files_df.empty:
         id_to_name = dict(zip(files_df.get("id", []), files_df.get("file_name", [])))
@@ -393,8 +398,8 @@ def _run_single_dataset(
 
         uuids = list(id_to_name.keys())
         if tar_archives and uuids:
-            tar_path = output_dir / f"{dataset_name}_files.tar.gz"
-            # Optional: you can skip if tar already exists.
+            tar_name = f"{dataset_name}_files.tar.gz"
+            tar_path = output_dir / tar_name
             if not tar_path.exists():
                 client.download_tar(
                     uuids, target_path=str(tar_path), uncompressed=False

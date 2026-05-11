@@ -14,8 +14,9 @@
 
 ## 🚀 Features
 - Source-aware interface for `gdc`, `tcia`, and `patho-bench`.
+- Clean, modular architecture with explicit ports/adapters for GDC and TCIA.
 - Easy interface to the GDC API and TCIA/NBIA public API.
-- Multi-dataset support.
+- Multi-dataset support (download one or multiple TCGA projects at once).
 - TCIA imaging collection support with collection listing, modality listing, and series downloads.
 - Patho-Bench benchmark metadata support with direct Hugging Face split download plus raw-data access manifests.
 - Annotation options:  
@@ -31,10 +32,21 @@
 
 ## 📦 Installation
 
-### From PyPI 
+### From PyPI (pip)
 ```bash
 pip install tcga-tools
 ```
+
+### From PyPI (uv)
+```bash
+uv pip install tcga-tools
+```
+
+### Optional Pathology Dependencies (TCIA + GDC wrapper)
+```bash
+pip install gdc-api-wrapper
+```
+
 ### From Source
 ```bash
 git clone https://github.com/LUMCPathAI/TCGA-Tools.git
@@ -99,6 +111,29 @@ patho_bench_artifacts = tt.download(
     output_dir="./PathoBench-COAD",
 )
 print(patho_bench_artifacts["raw_data_manifest_json"])
+```
+
+## 🧬 Pathology Portal (TCGA + TCIA)
+Use the high-level portal to query pathology metadata and download slides from
+TCGA (GDC) and TCIA using clean, modular services.
+
+```python
+from tcga_tools.pathology import PathologyDataPortal
+from tcga_tools.services.tcia_pathology import TciaSeriesQuery
+
+portal = PathologyDataPortal()
+
+# --- TCIA: SOP Instance lookup and downloads ---
+query = TciaSeriesQuery(series_instance_uid="uid.series.instance", format_="JSON")
+sop_result = portal.list_tcia_sop_instance_uids(query)
+portal.download_tcia_series(series_instance_uid="uid.series.instance", output_dir="./TCIA")
+
+# --- TCGA: download pathology files via GDC wrapper ---
+tcga_files = portal.download_tcga_project(
+    project_id="TCGA-LUSC",
+    filetypes=[".svs"],
+    output_dir="./TCGA-LUSC",
+)
 ```
 
 ## 📊 Example Outputs (with statistics=True, visualizations=True)

@@ -1,14 +1,18 @@
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
+from typing import Optional
 
 import tcga_tools
 from tcga_tools import downloader as _dl
 from tcga_tools import patho_bench as _patho_bench
 from tcga_tools import tcia as _tcia
+from tcga_tools.ports import DownloadResult
 
 
 def _contains_value(node, target):
@@ -117,6 +121,21 @@ class FakeClient:
     def download_manifest_for_query(self, filters, *, manifest_path: str) -> str:
         Path(manifest_path).write_text("file_id\tfile_name\n")
         return manifest_path
+
+
+class FakeDownloader:
+    def download_single(self, uuid: str, *, path: str, name=None) -> DownloadResult:
+        os.makedirs(path, exist_ok=True)
+        filename = name or uuid
+        target = os.path.join(path, filename)
+        open(target, "wb").close()
+        return DownloadResult(path=target, filename=filename)
+
+    def download_multiple(self, uuids, *, path: str) -> DownloadResult:
+        os.makedirs(path, exist_ok=True)
+        target = os.path.join(path, "gdc_download.tar.gz")
+        open(target, "wb").close()
+        return DownloadResult(path=target, filename="gdc_download.tar.gz")
 
 
 class FakeTCIAClient:
@@ -275,6 +294,7 @@ class FakePathoBenchClient:
 
 def test_download_with_all_annotations(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(_dl, "GDCClient", FakeClient)
+    monkeypatch.setattr(_dl, "GdcApiWrapperDownloader", FakeDownloader)
 
     out = tcga_tools.download(
         dataset_name="TCGA-LUSC",
